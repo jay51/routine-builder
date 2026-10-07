@@ -1,0 +1,17 @@
+<resources>
+    <style name="Theme.RoutineBuilder" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F8F7F2</item>
+        <item name="android:navigationBarColor">#F8F7F2</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">#435E50</item>
+    </style>
+    <style name="Theme.RoutineReminder" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
