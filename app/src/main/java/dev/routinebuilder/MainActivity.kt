@@ -12,9 +12,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -30,16 +31,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -72,7 +69,6 @@ import java.time.ZonedDateTime
 import java.time.format.TextStyle
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.min
 
 private val forest = Color(0xFF395746)
 private val ink = Color(0xFF202821)
@@ -260,6 +256,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
     val routines = vm.routines.collectAsState().value
     val routineTasks = vm.routineTasks.collectAsState().value
     val todayTasks = vm.today.collectAsState().value
+    val mountainJourney = rememberMountainJourney(todayTasks)
     val consistencyWeek = vm.consistencyWeek.collectAsState().value
     val fileBusy = vm.fileBusy.collectAsState().value
     val fileMessage = vm.fileMessage.collectAsState().value
@@ -360,7 +357,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
                         } else save()
                     }
                 )
-                tab == "Today" -> TodayScreen(todayTasks, routines.any { it.active }, consistencyWeek, onOpen = { selected = it })
+                tab == "Today" -> TodayScreen(todayTasks, routines.any { it.active }, consistencyWeek, mountainJourney, onOpen = { selected = it })
                 tab == "Routines" -> RoutinesScreen(
                     routines = routines,
                     tasks = routineTasks,
@@ -407,16 +404,28 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
 }
 
 @Composable
-private fun TodayScreen(tasks: List<TodayRoutineTask>, hasActiveRoutine: Boolean, week: List<ConsistencyDay>, onOpen: (TodayRoutineTask) -> Unit) {
+private fun TodayScreen(
+    tasks: List<TodayRoutineTask>,
+    hasActiveRoutine: Boolean,
+    week: List<ConsistencyDay>,
+    mountainJourney: Animatable<Float, AnimationVector1D>,
+    onOpen: (TodayRoutineTask) -> Unit
+) {
     val remainingTasks = tasks.filter { it.log == null }
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 26.dp),
+        contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 14.dp, bottom = 26.dp),
         verticalArrangement = Arrangement.spacedBy(15.dp)
     ) {
-        item { WeekConsistency(week) }
-        item { TodayMilestone(tasks) }
-        if (remainingTasks.isNotEmpty()) item { SectionHeading("Still to do", "") }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                WeekConsistency(week)
+                TodayMilestone(tasks, mountainJourney)
+            }
+        }
+        if (remainingTasks.isNotEmpty()) item {
+            HorizontalDivider(color = forest.copy(alpha = .16f))
+        }
         if (tasks.isEmpty()) {
             if (hasActiveRoutine) {
                 item { EmptyCard("No routine activities today", "Choose the days that work for you when you add activities to a routine.") }
@@ -432,8 +441,8 @@ private fun TodayScreen(tasks: List<TodayRoutineTask>, hasActiveRoutine: Boolean
 
 @Composable
 private fun WeekConsistency(days: List<ConsistencyDay>) {
-    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(22.dp)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.getDefault())), color = ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth()) {
                 days.forEach { day ->
@@ -467,12 +476,13 @@ private fun WeekConsistency(days: List<ConsistencyDay>) {
                             contentDescription = "${if (isToday) "Today, " else ""}${day.date.format(DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.getDefault()))}. $description${if (day.total > 0) ", ${day.completed} of ${day.total} tasks completed" else ""}"
                         },
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(day.date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()), color = if (isToday) forest else Color(0xFF68736A), fontSize = 11.sp, fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium)
                         Box(
-                            Modifier.size(34.dp).background(background, CircleShape)
-                                .then(if (isToday) Modifier.border(2.dp, if (day.status == ConsistencyStatus.COMPLETE) gold else forest, CircleShape) else Modifier),
+                            Modifier.sizeIn(minWidth = 34.dp, minHeight = 34.dp).background(background, CircleShape)
+                                .then(if (isToday) Modifier.border(2.dp, if (day.status == ConsistencyStatus.COMPLETE) gold else forest, CircleShape) else Modifier)
+                                .padding(4.dp),
                             contentAlignment = Alignment.Center
                         ) { Text(symbol, color = foreground, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
                         Text(if (day.total > 0) "${day.completed}/${day.total}" else "", color = Color(0xFF68736A), fontSize = 10.sp)
@@ -484,43 +494,38 @@ private fun WeekConsistency(days: List<ConsistencyDay>) {
 }
 
 @Composable
-private fun TodayMilestone(tasks: List<TodayRoutineTask>) {
+private fun TodayMilestone(tasks: List<TodayRoutineTask>, mountainJourney: Animatable<Float, AnimationVector1D>) {
     val completed = tasks.count { it.log != null }
     val total = tasks.size
-    val progress = if (total == 0) 0f else completed.toFloat() / total.toFloat()
+    val celebration = if (total > 0 && completed == total) (mountainJourney.value - total).coerceIn(0f, 1f) else 0f
+    val reveal = androidx.compose.animation.core.FastOutSlowInEasing.transform(((celebration - .55f) / .45f).coerceIn(0f, 1f))
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(22.dp)
+        colors = CardDefaults.cardColors(containerColor = lerp(Color.White, mint, reveal)),
+        shape = RoundedCornerShape(12.dp)
     ) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Today's milestone", color = ink, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                Text("$completed / $total", color = forest, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 8.dp), contentAlignment = Alignment.Center) {
+            Column(Modifier.fillMaxWidth().graphicsLayer { alpha = 1f - reveal }
+                .then(if (reveal >= .5f) Modifier.clearAndSetSemantics {} else Modifier), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Today's milestone", modifier = Modifier.weight(1f).padding(end = 8.dp), color = ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text("$completed / $total", color = forest, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+                MountainMilestone(completed, total, mountainJourney)
             }
-            Canvas(
-                modifier = Modifier.fillMaxWidth().height(32.dp).semantics {
-                    progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
-                    contentDescription = "$completed of $total tasks completed"
-                }
-            ) {
-                val pointRadius = if (total == 0) 0f else min(9.dp.toPx(), size.width / (total * 3f))
-                val trackHeight = 14.dp.toPx()
-                val trackTop = (size.height - trackHeight) / 2f
-                val trackStart = pointRadius
-                val trackWidth = size.width - pointRadius * 2f
-                drawRoundRect(mint, Offset(trackStart, trackTop), Size(trackWidth, trackHeight), CornerRadius(trackHeight / 2f))
-                if (completed > 0) {
-                    drawRoundRect(forest, Offset(trackStart, trackTop), Size(trackWidth * progress, trackHeight), CornerRadius(trackHeight / 2f))
-                }
-                repeat(total) { index ->
-                    val center = Offset(trackStart + trackWidth * (index + 1) / total, size.height / 2f)
-                    val reached = index < completed
-                    drawCircle(if (reached) gold else Color.White, pointRadius, center)
-                    drawCircle(forest, pointRadius, center, style = Stroke(width = 2.dp.toPx()))
+            if (reveal > 0f) {
+                Column(Modifier.fillMaxWidth().graphicsLayer { alpha = reveal }
+                    .then(if (reveal < .5f) Modifier.clearAndSetSemantics {} else Modifier),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("✓  You're done for today", color = forest, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("Take a breath. You've earned it.", color = forest, fontSize = 13.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("$completed / $total tasks completed", color = forest, fontSize = 12.sp)
                 }
             }
+            FinishConfetti(celebration, Modifier.matchParentSize())
         }
     }
 }
