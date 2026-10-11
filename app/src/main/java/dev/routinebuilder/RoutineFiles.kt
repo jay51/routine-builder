@@ -12,7 +12,7 @@ internal class RoutineFileException(message: String) : Exception(message)
 
 internal data class ImportedRoutine(val title: String, val tasks: List<RoutineTaskDraft>)
 
-/** Version 1 of docs/routine-v1.schema.json. No database IDs or completion logs. */
+/** Exports version 2; reads versions 1 and 2. No database IDs or completion logs. */
 internal object RoutineFiles {
     private const val FORMAT = "routine-builder.routine"
     private const val MAX_BYTES = 1_048_576
@@ -50,7 +50,7 @@ internal object RoutineFiles {
     fun encode(routine: RoutineEntity, tasks: List<RoutineTaskEntity>): String {
         val document = buildJsonObject {
             put("format", FORMAT)
-            put("schemaVersion", 1)
+            put("schemaVersion", 2)
             putJsonObject("routine") {
                 put("title", routine.name)
                 putJsonArray("tasks") {
@@ -65,6 +65,8 @@ internal object RoutineFiles {
                             put("durationMinutes", task.durationMinutes)
                             put("timeOfDay", task.timeOfDay)
                             put("isDurationTask", task.isDurationTask)
+                            put("timerEnabled", task.timerEnabled)
+                            put("timerMinutes", task.timerMinutes)
                             putJsonArray("daysOfWeek") {
                                 task.daysOfWeek.split(',').map(String::toInt).sorted().forEach { add(JsonPrimitive(it)) }
                             }
@@ -81,7 +83,7 @@ internal object RoutineFiles {
 
     fun decode(contents: String): ImportedRoutine {
         val root = try {
-            // Bound nesting before parsing untrusted input; version 1 needs at most 5 levels.
+            // Bound nesting before parsing untrusted input; supported versions need at most 5 levels.
             var depth = 0
             var inString = false
             var escaped = false
@@ -105,7 +107,8 @@ internal object RoutineFiles {
         }
         root.exactKeys(setOf("format", "schemaVersion", "routine"))
         if (root.string("format", 100) != FORMAT) throw RoutineFileException("This isn't a Routine Builder routine file.")
-        if (root.integer("schemaVersion") != 1) throw RoutineFileException("This routine file uses an unsupported version.")
+        val version = root.integer("schemaVersion")
+        if (version !in 1..2) throw RoutineFileException("This routine file uses an unsupported version.")
         val routine = root["routine"] as? JsonObject ?: invalid("routine")
         routine.exactKeys(setOf("title", "tasks"))
         val title = routine.string("title", 200)
@@ -113,7 +116,7 @@ internal object RoutineFiles {
         if (tasks.size > 100) throw RoutineFileException("A routine file can contain at most 100 activities.")
         val drafts = tasks.mapIndexed { index, element ->
             val task = element as? JsonObject ?: invalid("activity ${index + 1}")
-            task.exactKeys(taskKeys)
+            task.exactKeys(if (version == 1) taskKeys else taskKeys + setOf("timerEnabled", "timerMinutes"))
             val category = task.string("category", 100)
             if (category !in categories) invalid("category")
             val duration = task.integer("durationMinutes")
@@ -125,12 +128,21 @@ internal object RoutineFiles {
             if (dayNumbers.isEmpty() || dayNumbers.size > 7 || dayNumbers.any { it !in 1..7 } || dayNumbers.distinct().size != dayNumbers.size) invalid("daysOfWeek")
             val durationTask = task["isDurationTask"] as? JsonPrimitive ?: invalid("isDurationTask")
             if (durationTask.isString || durationTask.booleanOrNull == null) invalid("isDurationTask")
+            val kind = task.string("kind", 100)
+            val timerEnabled = if (version == 1) false else {
+                val enabled = task["timerEnabled"] as? JsonPrimitive ?: invalid("timerEnabled")
+                if (enabled.isString || enabled.booleanOrNull == null) invalid("timerEnabled")
+                enabled.boolean
+            }
+            val timerMinutes = if (version == 1) duration else task.integer("timerMinutes")
+            if (timerMinutes !in 1..999) invalid("timerMinutes")
+            if (timerEnabled && !supportsTaskTimer(kind, durationTask.boolean)) invalid("timerEnabled")
             RoutineTaskDraft(
                 templateId = task.string("templateId", 100), title = task.string("title", 200),
-                icon = task.string("icon", 32), category = category, kind = task.string("kind", 100),
+                icon = task.string("icon", 32), category = category, kind = kind,
                 instructions = task.string("instructions", 4000), durationMinutes = duration,
                 timeOfDay = time, daysOfWeek = dayNumbers.map(DayOfWeek::of).toSet(),
-                isDurationTask = durationTask.boolean
+                isDurationTask = durationTask.boolean, timerEnabled = timerEnabled, timerMinutes = timerMinutes
             )
         }
         return ImportedRoutine(title, drafts)

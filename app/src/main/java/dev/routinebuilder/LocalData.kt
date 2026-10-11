@@ -44,7 +44,9 @@ data class RoutineTaskEntity(
     val timeOfDay: String,
     val daysOfWeek: String,
     val orderIndex: Int,
-    val isDurationTask: Boolean
+    val isDurationTask: Boolean,
+    val timerEnabled: Boolean = false,
+    val timerMinutes: Int = 10
 )
 
 @Entity(tableName = "task_logs", indices = [Index(value = ["completionDate"]), Index(value = ["taskId"])])
@@ -73,7 +75,9 @@ data class RoutineTaskDraft(
     val timeOfDay: String,
     val daysOfWeek: Set<DayOfWeek>,
     val isDurationTask: Boolean,
-    val existingTaskId: String? = null
+    val existingTaskId: String? = null,
+    val timerEnabled: Boolean = false,
+    val timerMinutes: Int = 10
 )
 
 data class TodayRoutineTask(
@@ -182,6 +186,18 @@ interface RoutineDao {
     @Query("DELETE FROM routine_tasks WHERE routineId = :routineId")
     suspend fun deleteRoutineTasks(routineId: String)
 
+    @Query("DELETE FROM routines WHERE id = :routineId")
+    suspend fun deleteRoutineRow(routineId: String)
+
+    @Transaction
+    suspend fun removeRoutine(routineId: String) {
+        syncConsistency()
+        deleteRoutineTasks(routineId)
+        deleteRoutineRow(routineId)
+        // Retain completion snapshots and daily plans; only future schedules change.
+        syncConsistency()
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveTaskLog(log: TaskLogEntity)
 
@@ -238,7 +254,7 @@ interface RoutineDao {
 
 @Database(
     entities = [RoutineEntity::class, RoutineTaskEntity::class, TaskLogEntity::class, RoutineDayPlanEntity::class, RoutineTrackingPlanEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class RoutineDatabase : RoomDatabase() {
@@ -314,6 +330,8 @@ class RoutineRepository(private val dao: RoutineDao) {
 
     suspend fun removeTask(taskId: String) = dao.removeTask(taskId)
 
+    suspend fun removeRoutine(routineId: String) = dao.removeRoutine(routineId)
+
     suspend fun setRoutineActive(routineId: String, active: Boolean) = dao.setRoutineActive(routineId, active)
 
     suspend fun ensureSingleActiveRoutine() = dao.ensureSingleActiveRoutine()
@@ -354,7 +372,9 @@ private fun List<RoutineTaskDraft>.toEntities(routineId: String) = mapIndexed { 
         timeOfDay = draft.timeOfDay,
         daysOfWeek = draft.daysOfWeek.sortedBy { it.value }.joinToString(",") { it.value.toString() },
         orderIndex = index,
-        isDurationTask = draft.isDurationTask
+        isDurationTask = draft.isDurationTask,
+        timerEnabled = draft.timerEnabled && supportsTaskTimer(draft.kind, draft.isDurationTask),
+        timerMinutes = draft.timerMinutes.also { require(it in 1..999) }
     )
 }
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,12 +34,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -140,6 +147,7 @@ class MainActivity : ComponentActivity() {
 }
 
 class RoutineViewModel(private val repository: RoutineRepository) : ViewModel() {
+    internal val taskTimers = TaskTimers(viewModelScope)
     val routines = repository.routines.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val routineTasks = repository.routineTasks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     private val todayDate = MutableStateFlow(LocalDate.now())
@@ -177,12 +185,19 @@ class RoutineViewModel(private val repository: RoutineRepository) : ViewModel() 
         viewModelScope.launch { repository.removeTask(taskId) }
     }
 
+    fun removeRoutine(routineId: String) {
+        viewModelScope.launch { repository.removeRoutine(routineId) }
+    }
+
     fun setRoutineActive(routineId: String, active: Boolean) {
         viewModelScope.launch { repository.setRoutineActive(routineId, active) }
     }
 
     fun saveTaskLog(task: RoutineTaskEntity, actualDuration: Int?, notes: String) {
-        viewModelScope.launch { repository.saveTaskLog(task, actualDuration, notes) }
+        viewModelScope.launch {
+            repository.saveTaskLog(task, actualDuration, notes)
+            taskTimers.reset(task.id)
+        }
     }
 
     internal suspend fun resolveReminder(request: ReminderRequest): TodayRoutineTask? {
@@ -256,6 +271,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
     val routines = vm.routines.collectAsState().value
     val routineTasks = vm.routineTasks.collectAsState().value
     val todayTasks = vm.today.collectAsState().value
+    val timerSessions = vm.taskTimers.state.collectAsState().value
     val mountainJourney = rememberMountainJourney(todayTasks)
     val consistencyWeek = vm.consistencyWeek.collectAsState().value
     val fileBusy = vm.fileBusy.collectAsState().value
@@ -286,6 +302,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
         RoutineNotifications.reconcile(context, routineTasks.filter { it.routineId in activeRoutineIds })
     }
     LaunchedEffect(todayTasks) {
+        vm.taskTimers.retain(todayTasks)
         todayTasks.filter { it.log != null }.forEach { RoutineNotifications.dismissTask(context, it.task.id) }
     }
 
@@ -334,6 +351,10 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
             when {
                 selected != null -> TaskScreen(
                     item = selected!!,
+                    timerSession = timerSessions[selected!!.task.id],
+                    onStartTimer = { vm.taskTimers.start(selected!!.task) },
+                    onPauseTimer = { vm.taskTimers.pause(selected!!.task.id) },
+                    onResetTimer = { vm.taskTimers.reset(selected!!.task.id) },
                     onBack = { selected = null },
                     onSave = { duration, notes -> vm.saveTaskLog(selected!!.task, duration, notes); selected = null }
                 )
@@ -357,7 +378,10 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
                         } else save()
                     }
                 )
-                tab == "Today" -> TodayScreen(todayTasks, routines.any { it.active }, consistencyWeek, mountainJourney, onOpen = { selected = it })
+                tab == "Today" -> TodayScreen(todayTasks, routines.any { it.active }, consistencyWeek, mountainJourney,
+                    onOpen = { selected = it }, onComplete = {
+                        vm.saveTaskLog(it.task, if (it.task.isDurationTask) it.task.durationMinutes else null, "")
+                    })
                 tab == "Routines" -> RoutinesScreen(
                     routines = routines,
                     tasks = routineTasks,
@@ -389,6 +413,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
                         tasksBeingEdited = routineTasks
                         builder = true
                     },
+                    onDelete = { vm.removeRoutine(it.id) },
                     onSetActive = { routineId, active ->
                         val change = { vm.setRoutineActive(routineId, active) }
                         if (active && Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -409,7 +434,8 @@ private fun TodayScreen(
     hasActiveRoutine: Boolean,
     week: List<ConsistencyDay>,
     mountainJourney: Animatable<Float, AnimationVector1D>,
-    onOpen: (TodayRoutineTask) -> Unit
+    onOpen: (TodayRoutineTask) -> Unit,
+    onComplete: (TodayRoutineTask) -> Unit
 ) {
     val remainingTasks = tasks.filter { it.log == null }
     LazyColumn(
@@ -435,7 +461,9 @@ private fun TodayScreen(
         } else if (remainingTasks.isEmpty()) {
             item { EmptyCard("All done for today", "You've completed every activity in today's routine. Enjoy the rest of your day!") }
         }
-        items(remainingTasks, key = { it.task.id }) { item -> RoutineTaskCard(item, onClick = { onOpen(item) }) }
+        items(remainingTasks, key = { it.task.id }) { item ->
+            SwipeableTodayTask(item, onOpen = { onOpen(item) }, onComplete = { onComplete(item) })
+        }
     }
 }
 
@@ -530,6 +558,40 @@ private fun TodayMilestone(tasks: List<TodayRoutineTask>, mountainJourney: Anima
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableTodayTask(item: TodayRoutineTask, onOpen: () -> Unit, onComplete: () -> Unit) {
+    // Quick completion uses the saved routine settings. Tap to customize today's entry.
+    val currentAction by rememberUpdatedState(onComplete)
+    val direction = if (LocalLayoutDirection.current == LayoutDirection.Ltr)
+        SwipeToDismissBoxValue.EndToStart else SwipeToDismissBoxValue.StartToEnd
+    key(item.task.id, LocalDate.now()) {
+        val swipeState = rememberSwipeToDismissBoxState(positionalThreshold = { width -> width * .4f })
+        LaunchedEffect(swipeState.currentValue) {
+            if (swipeState.currentValue == direction) {
+                currentAction()
+            }
+        }
+        SwipeToDismissBox(
+            state = swipeState,
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).semantics {
+                customActions = listOf(CustomAccessibilityAction("Mark complete using routine settings") { currentAction(); true })
+            },
+            enableDismissFromStartToEnd = direction == SwipeToDismissBoxValue.StartToEnd,
+            enableDismissFromEndToStart = direction == SwipeToDismissBoxValue.EndToStart,
+            backgroundContent = {
+                Box(Modifier.fillMaxSize().background(forest).padding(horizontal = 20.dp),
+                    contentAlignment = if (LocalLayoutDirection.current == LayoutDirection.Ltr) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Text("✓  Complete",
+                        color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            }
+        ) {
+            RoutineTaskCard(item, onClick = onOpen)
+        }
+    }
+}
+
 @Composable
 private fun RoutineTaskCard(item: TodayRoutineTask, onClick: () -> Unit) {
     val task = item.task
@@ -561,8 +623,29 @@ private fun RoutinesScreen(
     onExport: (RoutineEntity) -> Unit,
     onAdd: () -> Unit,
     onEdit: (RoutineEntity, List<RoutineTaskEntity>) -> Unit,
+    onDelete: (RoutineEntity) -> Unit,
     onSetActive: (String, Boolean) -> Unit
 ) {
+    var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingDelete = routines.firstOrNull { it.id == pendingDeleteId }
+    if (pendingDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteId = null },
+            title = { Text("Delete routine?") },
+            text = {
+                Text("\"${pendingDelete.name}\" and its activities will be removed, and its reminders will stop. Past completion records will stay on this device. This cannot be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDeleteId = null
+                    onDelete(pendingDelete)
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteId = null }) { Text("Cancel") }
+            }
+        )
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -579,14 +662,11 @@ private fun RoutinesScreen(
         if (fileBusy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = forest), shape = RoundedCornerShape(18.dp)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Pick your routine", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Button(onClick = onAdd, colors = ButtonDefaults.buttonColors(containerColor = gold, contentColor = ink), modifier = Modifier.heightIn(min = 48.dp)) {
-                            Text("＋  Create routine", fontWeight = FontWeight.Bold)
-                        }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Pick your routine", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Button(onClick = onAdd, colors = ButtonDefaults.buttonColors(containerColor = gold, contentColor = ink), modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("＋  Create routine", fontWeight = FontWeight.Bold)
                     }
-                    Text("✿", color = gold, fontSize = 32.sp)
                 }
             }
         }
@@ -599,7 +679,7 @@ private fun RoutinesScreen(
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(routine.name, fontSize = 18.sp, color = ink, fontWeight = FontWeight.SemiBold)
-                            Text("${if (routine.active) "Active" else "Inactive"} · ${routineTasks.size} ${if (routineTasks.size == 1) "activity" else "activities"}", color = if (routine.active) forest else Color(0xFF68736A), fontSize = 13.sp)
+                            Text("${routineTasks.size} ${if (routineTasks.size == 1) "activity" else "activities"}", color = Color(0xFF68736A), fontSize = 13.sp)
                         }
                         OutlinedButton(
                             onClick = { onExport(routine) },
@@ -611,16 +691,35 @@ private fun RoutinesScreen(
                         ) { Text("Export", fontSize = 12.sp) }
                         Spacer(Modifier.width(4.dp))
                         IconButton(
+                            onClick = { pendingDeleteId = routine.id },
+                            enabled = !fileBusy,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_delete_routine),
+                                contentDescription = "Delete ${routine.name}",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        IconButton(
                             onClick = { onEdit(routine, routineTasks) },
-                            modifier = Modifier.size(52.dp).semantics { contentDescription = "Edit ${routine.name}" }
-                        ) { Text("✎", color = forest, fontSize = 26.sp) }
+                            modifier = Modifier.size(56.dp).background(mint, RoundedCornerShape(16.dp))
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_edit_routine),
+                                contentDescription = "Edit ${routine.name}",
+                                tint = forest,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
                     }
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 48.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Active routine", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("Active routine", modifier = Modifier.weight(1f), color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Switch(
                             checked = routine.active,
                             onCheckedChange = { active -> onSetActive(routine.id, active) },
@@ -676,7 +775,9 @@ private fun RoutineBuilderScreen(
                     daysOfWeek = task.daysOfWeek.split(',').mapNotNull(String::toIntOrNull)
                         .mapNotNull { runCatching { DayOfWeek.of(it) }.getOrNull() }.toSet(),
                     isDurationTask = task.isDurationTask,
-                    existingTaskId = task.id
+                    existingTaskId = task.id,
+                    timerEnabled = task.timerEnabled,
+                    timerMinutes = task.timerMinutes
                 )
             }
         )
@@ -685,6 +786,8 @@ private fun RoutineBuilderScreen(
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     var category by remember { mutableStateOf("All") }
     var durationText by remember { mutableStateOf("") }
+    var timerEnabled by remember { mutableStateOf(false) }
+    var timerText by remember { mutableStateOf("10") }
     var selectedTime by remember { mutableStateOf(LocalTime.of(9, 0)) }
     var showTimePicker by remember { mutableStateOf(false) }
     var selectedDays by remember { mutableStateOf(emptySet<DayOfWeek>()) }
@@ -694,6 +797,8 @@ private fun RoutineBuilderScreen(
         activeTemplate = template
         editingIndex = index
         durationText = durationInput(template.kind, existing?.durationMinutes ?: template.defaultDuration)
+        timerEnabled = existing?.timerEnabled == true && supportsTaskTimer(template.kind, template.isDurationTask)
+        timerText = (existing?.timerMinutes ?: template.defaultDuration.coerceIn(1, 999)).toString()
         selectedTime = existing?.timeOfDay?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
             ?: if (template.kind == "sleep") LocalTime.of(22, 0) else LocalTime.of(9, 0)
         selectedDays = existing?.daysOfWeek ?: template.defaultDays
@@ -790,7 +895,7 @@ private fun RoutineBuilderScreen(
 
         BuilderStep.CONFIGURE -> {
             val template = activeTemplate
-            if (template != null) Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 12.dp)) {
+            if (template != null) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 22.dp, vertical = 12.dp)) {
                 TextButton(onClick = { step = BuilderStep.LIBRARY }, contentPadding = PaddingValues(0.dp)) { Text("‹  Task library", color = forest, fontWeight = FontWeight.SemiBold) }
                 Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(13.dp)) {
                     Box(Modifier.size(58.dp).background(mint, CircleShape), contentAlignment = Alignment.Center) { Text(template.icon, fontSize = 29.sp) }
@@ -813,6 +918,29 @@ private fun RoutineBuilderScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = if (template.kind == "sleep") KeyboardType.Decimal else KeyboardType.Number),
                         singleLine = true
                     )
+                }
+                if (supportsTaskTimer(template.kind, template.isDurationTask)) {
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Use activity timer", modifier = Modifier.weight(1f), color = ink, fontWeight = FontWeight.Medium)
+                        Switch(checked = timerEnabled, onCheckedChange = { timerEnabled = it },
+                            modifier = Modifier.semantics { contentDescription = "Use activity timer" })
+                    }
+                    if (timerEnabled) {
+                        OutlinedTextField(
+                            value = timerText,
+                            onValueChange = { if (it.length <= 3 && it.all(Char::isDigit)) timerText = it },
+                            label = { Text("Timer limit (minutes)") },
+                            supportingText = { Text("1–999 minutes. Start it from the task screen.") },
+                            isError = timerText.toIntOrNull()?.let { it in 1..999 } != true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(10, 20, 30).forEach { minutes ->
+                                FilterChip(selected = timerText.toIntOrNull() == minutes, onClick = { timerText = minutes.toString() }, label = { Text("$minutes min") })
+                            }
+                        }
+                    }
                 }
                 val context = LocalContext.current
                 OutlinedButton(
@@ -853,7 +981,7 @@ private fun RoutineBuilderScreen(
                     }
                 }
                 Text("You can choose every day or select specific days of the week.", color = Color(0xFF737B74), fontSize = 13.sp)
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = {
                         val draft = RoutineTaskDraft(
@@ -867,13 +995,16 @@ private fun RoutineBuilderScreen(
                             timeOfDay = selectedTime.toString(),
                             daysOfWeek = selectedDays,
                             isDurationTask = template.isDurationTask,
-                            existingTaskId = editingIndex?.let { drafts.getOrNull(it)?.existingTaskId }
+                            existingTaskId = editingIndex?.let { drafts.getOrNull(it)?.existingTaskId },
+                            timerEnabled = timerEnabled && supportsTaskTimer(template.kind, template.isDurationTask),
+                            timerMinutes = timerText.toIntOrNull()?.takeIf { it in 1..999 } ?: template.defaultDuration.coerceIn(1, 999)
                         )
                         val index = editingIndex
                         drafts = if (index == null) drafts + draft else drafts.mapIndexed { i, old -> if (i == index) draft else old }
                         step = BuilderStep.DETAILS
                     },
-                    enabled = selectedDays.isNotEmpty() && (!template.isDurationTask || parseDurationInput(template.kind, durationText) != null),
+                    enabled = selectedDays.isNotEmpty() && (!template.isDurationTask || parseDurationInput(template.kind, durationText) != null) &&
+                        (!timerEnabled || timerText.toIntOrNull()?.let { it in 1..999 } == true),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)
                 ) { Text(if (editingIndex == null) "Add to routine" else "Save changes", fontWeight = FontWeight.Bold) }
             }
@@ -918,7 +1049,8 @@ private fun LibraryTaskCard(task: PredefinedTask, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TaskScreen(item: TodayRoutineTask, onBack: () -> Unit, onSave: (Int?, String) -> Unit) {
+private fun TaskScreen(item: TodayRoutineTask, timerSession: TaskTimerSession?, onStartTimer: () -> Unit,
+    onPauseTimer: () -> Unit, onResetTimer: () -> Unit, onBack: () -> Unit, onSave: (Int?, String) -> Unit) {
     val task = item.task
     var durationText by remember(task.id, item.log?.id) { mutableStateOf(durationInput(task.kind, item.log?.actualDurationMinutes ?: task.durationMinutes)) }
     var notes by remember(task.id, item.log?.id) { mutableStateOf(item.log?.notes.orEmpty()) }
@@ -942,6 +1074,9 @@ private fun TaskScreen(item: TodayRoutineTask, onBack: () -> Unit, onSave: (Int?
                         if (task.isDurationTask) Text("Your routine target: ${durationLabel(task.kind, task.durationMinutes)}", color = forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     }
                 }
+            }
+            if (item.log == null && task.timerEnabled && supportsTaskTimer(task.kind, task.isDurationTask)) item {
+                TaskTimerCard(task, timerSession, onStartTimer, onPauseTimer, onResetTimer)
             }
             if (task.isDurationTask) item {
                 OutlinedTextField(
