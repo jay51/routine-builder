@@ -13,6 +13,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
 import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -46,7 +47,9 @@ data class RoutineTaskEntity(
     val orderIndex: Int,
     val isDurationTask: Boolean,
     val timerEnabled: Boolean = false,
-    val timerMinutes: Int = 10
+    val timerMinutes: Int = 10,
+    val checklistEnabled: Boolean = false,
+    val checklistItems: List<ChecklistItem> = emptyList()
 )
 
 @Entity(tableName = "task_logs", indices = [Index(value = ["completionDate"]), Index(value = ["taskId"])])
@@ -61,7 +64,9 @@ data class TaskLogEntity(
     val targetDurationMinutes: Int,
     val completionDate: String,
     val actualDurationMinutes: Int?,
-    val notes: String
+    val notes: String,
+    val checklistItems: List<ChecklistItem> = emptyList(),
+    val checkedItemIds: Set<String> = emptySet()
 )
 
 data class RoutineTaskDraft(
@@ -77,16 +82,23 @@ data class RoutineTaskDraft(
     val isDurationTask: Boolean,
     val existingTaskId: String? = null,
     val timerEnabled: Boolean = false,
-    val timerMinutes: Int = 10
+    val timerMinutes: Int = 10,
+    val checklistEnabled: Boolean = false,
+    val checklistItems: List<ChecklistItem> = emptyList()
 )
 
 data class TodayRoutineTask(
     val task: RoutineTaskEntity,
     val routineName: String,
-    val log: TaskLogEntity?
+    val log: TaskLogEntity?,
+    val date: LocalDate = LocalDate.now(),
+    val checkedItemIds: Set<String> = emptySet()
 )
 
 data class RoutineSnapshot(val routine: RoutineEntity, val tasks: List<RoutineTaskEntity>)
+
+@Entity(tableName = "task_checklist_progress", primaryKeys = ["taskId", "date"])
+data class TaskChecklistProgressEntity(val taskId: String, val date: String, val checkedItemIds: Set<String>)
 
 @Dao
 interface RoutineDao {
@@ -128,6 +140,29 @@ interface RoutineDao {
 
     @Query("SELECT routine_tasks.* FROM routine_tasks INNER JOIN routines ON routines.id = routine_tasks.routineId WHERE routines.active = 1 AND routine_tasks.id = :taskId LIMIT 1")
     suspend fun activeRoutineTask(taskId: String): RoutineTaskEntity?
+
+    @Query("DELETE FROM task_checklist_progress WHERE taskId NOT IN (SELECT id FROM routine_tasks)")
+    suspend fun removeOrphanChecklistProgress()
+
+    @Query("SELECT * FROM task_checklist_progress WHERE date = :date")
+    fun checklistProgress(date: String): Flow<List<TaskChecklistProgressEntity>>
+
+    @Query("SELECT * FROM task_checklist_progress WHERE taskId = :taskId AND date = :date")
+    suspend fun checklistProgressForTask(taskId: String, date: String): TaskChecklistProgressEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveChecklistProgress(progress: TaskChecklistProgressEntity)
+
+    @Transaction
+    suspend fun setChecklistItem(taskId: String, date: String, itemId: String, checked: Boolean) {
+        val task = activeRoutineTask(taskId) ?: return
+        if (!task.checklistEnabled || task.checklistItems.none { it.id == itemId }) return
+        if (date != LocalDate.now().toString() || LocalDate.now().dayOfWeek.value !in task.daysOfWeek.toDayNumbers()) return
+        val current = checklistProgressForTask(taskId, date)?.checkedItemIds.orEmpty()
+        val validIds = task.checklistItems.map { it.id }.toSet()
+        saveChecklistProgress(TaskChecklistProgressEntity(taskId, date,
+            (if (checked) current + itemId else current - itemId).intersect(validIds)))
+    }
 
     @Query("SELECT * FROM task_logs WHERE completionDate = :date")
     fun taskLogs(date: String): Flow<List<TaskLogEntity>>
@@ -194,6 +229,7 @@ interface RoutineDao {
         syncConsistency()
         deleteRoutineTasks(routineId)
         deleteRoutineRow(routineId)
+        removeOrphanChecklistProgress()
         // Retain completion snapshots and daily plans; only future schedules change.
         syncConsistency()
     }
@@ -208,6 +244,7 @@ interface RoutineDao {
     suspend fun removeTask(taskId: String) {
         syncConsistency()
         deleteRoutineTask(taskId)
+        removeOrphanChecklistProgress()
         syncConsistency()
     }
 
@@ -232,6 +269,7 @@ interface RoutineDao {
         insertRoutine(routine.copy(active = existing.active))
         deleteRoutineTasks(routine.id)
         insertRoutineTasks(tasks)
+        removeOrphanChecklistProgress()
         syncConsistency()
     }
 
@@ -253,10 +291,11 @@ interface RoutineDao {
 }
 
 @Database(
-    entities = [RoutineEntity::class, RoutineTaskEntity::class, TaskLogEntity::class, RoutineDayPlanEntity::class, RoutineTrackingPlanEntity::class],
-    version = 4,
+    entities = [RoutineEntity::class, RoutineTaskEntity::class, TaskLogEntity::class, RoutineDayPlanEntity::class, RoutineTrackingPlanEntity::class, TaskChecklistProgressEntity::class],
+    version = 5,
     exportSchema = false
 )
+@TypeConverters(ChecklistConverters::class)
 abstract class RoutineDatabase : RoomDatabase() {
     abstract fun routineDao(): RoutineDao
 
@@ -295,14 +334,17 @@ class RoutineRepository(private val dao: RoutineDao) {
     fun today(date: LocalDate): Flow<List<TodayRoutineTask>> = combine(
         dao.routineTasks(),
         dao.routines(),
-        dao.taskLogs(date.toString())
-    ) { tasks, routines, logs ->
+        dao.taskLogs(date.toString()),
+        dao.checklistProgress(date.toString())
+    ) { tasks, routines, logs, progress ->
         val names = routines.filter { it.active }.associate { it.id to it.name }
         val logsByTask = logs.associateBy { it.taskId }
+        val progressByTask = progress.associateBy { it.taskId }
         tasks.mapNotNull { task ->
             val routineName = names[task.routineId] ?: return@mapNotNull null
             if (DayOfWeek.from(date).value !in task.daysOfWeek.toDayNumbers()) return@mapNotNull null
-            TodayRoutineTask(task, routineName, logsByTask[task.id])
+            TodayRoutineTask(task, routineName, logsByTask[task.id], date,
+                logsByTask[task.id]?.checkedItemIds ?: progressByTask[task.id]?.checkedItemIds.orEmpty())
         }.sortedBy { runCatching { LocalTime.parse(it.task.timeOfDay) }.getOrDefault(LocalTime.MAX) }
     }.distinctUntilChanged()
 
@@ -336,7 +378,13 @@ class RoutineRepository(private val dao: RoutineDao) {
 
     suspend fun ensureSingleActiveRoutine() = dao.ensureSingleActiveRoutine()
 
-    suspend fun saveTaskLog(task: RoutineTaskEntity, actualDuration: Int?, notes: String, date: LocalDate = LocalDate.now()) {
+    suspend fun setChecklistItem(taskId: String, date: LocalDate, itemId: String, checked: Boolean) =
+        dao.setChecklistItem(taskId, date.toString(), itemId, checked)
+
+    suspend fun saveTaskLog(task: RoutineTaskEntity, actualDuration: Int?, notes: String, date: LocalDate = LocalDate.now(), checkedItemIds: Set<String>? = null) {
+        val items = if (task.checklistEnabled) task.checklistItems else emptyList()
+        val checked = (checkedItemIds ?: dao.checklistProgressForTask(task.id, date.toString())?.checkedItemIds.orEmpty())
+            .intersect(items.map { it.id }.toSet())
         dao.saveTaskLog(
             TaskLogEntity(
                 id = "${date}_${task.id}",
@@ -349,7 +397,9 @@ class RoutineRepository(private val dao: RoutineDao) {
                 targetDurationMinutes = task.durationMinutes,
                 completionDate = date.toString(),
                 actualDurationMinutes = actualDuration,
-                notes = notes.trim()
+                notes = notes.trim(),
+                checklistItems = items,
+                checkedItemIds = checked
             )
         )
     }
@@ -374,7 +424,9 @@ private fun List<RoutineTaskDraft>.toEntities(routineId: String) = mapIndexed { 
         orderIndex = index,
         isDurationTask = draft.isDurationTask,
         timerEnabled = draft.timerEnabled && supportsTaskTimer(draft.kind, draft.isDurationTask),
-        timerMinutes = draft.timerMinutes.also { require(it in 1..999) }
+        timerMinutes = draft.timerMinutes.also { require(it in 1..999) },
+        checklistEnabled = draft.checklistEnabled,
+        checklistItems = draft.checklistItems.also { require(checklistError(draft.checklistEnabled, it) == null) }
     )
 }
 

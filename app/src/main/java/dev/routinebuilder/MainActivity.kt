@@ -16,16 +16,15 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,7 +45,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -82,43 +80,9 @@ private val ink = Color(0xFF202821)
 private val paper = Color(0xFFF7F6F0)
 private val mint = Color(0xFFE5EEE6)
 private val gold = Color(0xFFF2C56B)
-private val allDays = DayOfWeek.entries.toSet()
 private val weekdays = listOf(
     DayOfWeek.MONDAY to "Mo", DayOfWeek.TUESDAY to "Tu", DayOfWeek.WEDNESDAY to "We",
     DayOfWeek.THURSDAY to "Th", DayOfWeek.FRIDAY to "Fr", DayOfWeek.SATURDAY to "Sa", DayOfWeek.SUNDAY to "Su"
-)
-
-private data class PredefinedTask(
-    val id: String,
-    val title: String,
-    val icon: String,
-    val category: String,
-    val kind: String,
-    val instructions: String,
-    val defaultDuration: Int,
-    val defaultDays: Set<DayOfWeek>,
-    val isDurationTask: Boolean = true
-)
-
-private val taskLibrary = listOf(
-    PredefinedTask("running", "Running", "🏃", "Exercise", "run", "Choose a comfortable pace and route. Walk breaks are welcome.", 25, setOf(DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.SATURDAY)),
-    PredefinedTask("walking", "Walking", "🚶", "Exercise", "walk", "Take an easy-paced walk and notice what's around you.", 15, allDays),
-    PredefinedTask("strength", "Strength workout", "💪", "Exercise", "strength", "Do a short, manageable strength session. Rest whenever you need to.", 20, setOf(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY)),
-    PredefinedTask("stretching", "Stretching", "🧘", "Exercise", "stretch", "Move gently through a few stretches that feel comfortable.", 10, allDays),
-    PredefinedTask("yoga", "Yoga", "🌿", "Exercise", "yoga", "Follow a short sequence at a pace that feels right for you.", 20, setOf(DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.SUNDAY)),
-    PredefinedTask("study", "Study session", "📚", "Learning", "study", "Pick one topic and focus on it. Take a short break afterward.", 25, setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)),
-    PredefinedTask("reading", "Read a book", "📖", "Learning", "read", "Read something you enjoy or want to learn about.", 20, allDays),
-    PredefinedTask("flashcards", "Review flashcards", "🗂️", "Learning", "review", "Review a small set of cards and pause when your focus fades.", 15, setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)),
-    PredefinedTask("language", "Practice a language", "💬", "Learning", "language", "Practice a few words, listen to a short clip, or have a conversation.", 15, allDays),
-    PredefinedTask("meditation", "Meditation", "🪷", "Wellbeing", "meditate", "Sit comfortably and return your attention to your breathing when it wanders.", 10, allDays),
-    PredefinedTask("sleep", "Sleep", "😴", "Wellbeing", "sleep", "Set the hours you want to sleep. Choose a bedtime for your reminder and record your sleep when you're ready.", 480, allDays),
-    PredefinedTask("journal", "Write in a journal", "✍️", "Wellbeing", "journal", "Write a few thoughts about your day, plans, or anything on your mind.", 5, allDays),
-    PredefinedTask("breathing", "Breathing break", "🌬️", "Wellbeing", "breathe", "Take a few slow, comfortable breaths. There is no need to force them.", 5, allDays),
-    PredefinedTask("sunlight", "Get outside", "🌤️", "Wellbeing", "outside", "Step outside for a little fresh air when it works for your day.", 10, allDays),
-    PredefinedTask("bed", "Make your bed", "🛏️", "Daily Essentials", "bed", "Straighten your bedding in whatever way feels easy.", 5, allDays, false),
-    PredefinedTask("bag", "Prepare tomorrow's bag", "🎒", "Daily Essentials", "prepare", "Gather the things you'll want to take with you tomorrow.", 5, setOf(DayOfWeek.SUNDAY, DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY), false),
-    PredefinedTask("tidy", "Tidy your space", "🧺", "Daily Essentials", "tidy", "Put a few things back where they belong. Stop when your time is up.", 10, allDays),
-    PredefinedTask("lunch", "Prepare lunch", "🥪", "Daily Essentials", "lunch", "Put together a simple lunch that fits your day.", 15, setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY), false),
 )
 
 class MainActivity : ComponentActivity() {
@@ -193,11 +157,15 @@ class RoutineViewModel(private val repository: RoutineRepository) : ViewModel() 
         viewModelScope.launch { repository.setRoutineActive(routineId, active) }
     }
 
-    fun saveTaskLog(task: RoutineTaskEntity, actualDuration: Int?, notes: String) {
+    fun saveTaskLog(task: RoutineTaskEntity, actualDuration: Int?, notes: String, checkedItemIds: Set<String>? = null, date: LocalDate = LocalDate.now()) {
         viewModelScope.launch {
-            repository.saveTaskLog(task, actualDuration, notes)
+            repository.saveTaskLog(task, actualDuration, notes, date, checkedItemIds)
             taskTimers.reset(task.id)
         }
+    }
+
+    fun setChecklistItem(taskId: String, date: LocalDate, itemId: String, checked: Boolean) {
+        viewModelScope.launch { repository.setChecklistItem(taskId, date, itemId, checked) }
     }
 
     internal suspend fun resolveReminder(request: ReminderRequest): TodayRoutineTask? {
@@ -272,6 +240,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
     val routineTasks = vm.routineTasks.collectAsState().value
     val todayTasks = vm.today.collectAsState().value
     val timerSessions = vm.taskTimers.state.collectAsState().value
+    val builderEditor: RoutineBuilderViewModel = viewModel()
     val mountainJourney = rememberMountainJourney(todayTasks)
     val consistencyWeek = vm.consistencyWeek.collectAsState().value
     val fileBusy = vm.fileBusy.collectAsState().value
@@ -308,9 +277,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
 
     var tab by remember { mutableStateOf("Today") }
     var selected by remember { mutableStateOf<TodayRoutineTask?>(null) }
-    var builder by remember { mutableStateOf(false) }
-    var routineBeingEdited by remember { mutableStateOf<RoutineEntity?>(null) }
-    var tasksBeingEdited by remember { mutableStateOf(emptyList<RoutineTaskEntity>()) }
+    var builder by rememberSaveable { mutableStateOf(false) }
     BackHandler(selected != null) { selected = null }
     LaunchedEffect(notificationRequest) {
         val request = notificationRequest ?: return@LaunchedEffect
@@ -350,23 +317,23 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
         Box(Modifier.fillMaxSize().padding(if (builder || selected != null) PaddingValues(0.dp) else padding)) {
             when {
                 selected != null -> TaskScreen(
-                    item = selected!!,
+                    item = todayTasks.firstOrNull { it.task.id == selected!!.task.id && it.date == selected!!.date } ?: selected!!,
                     timerSession = timerSessions[selected!!.task.id],
                     onStartTimer = { vm.taskTimers.start(selected!!.task) },
                     onPauseTimer = { vm.taskTimers.pause(selected!!.task.id) },
                     onResetTimer = { vm.taskTimers.reset(selected!!.task.id) },
                     onBack = { selected = null },
-                    onSave = { duration, notes -> vm.saveTaskLog(selected!!.task, duration, notes); selected = null }
+                    onChecklistChange = { itemId, checked -> vm.setChecklistItem(selected!!.task.id, selected!!.date, itemId, checked) },
+                    onSave = { duration, notes, checked ->
+                        vm.saveTaskLog(selected!!.task, duration, notes, checked, selected!!.date); selected = null
+                    }
                 )
                 builder -> RoutineBuilderScreen(
-                    existingRoutine = routineBeingEdited,
-                    existingTasks = tasksBeingEdited,
+                    editor = builderEditor,
                     onCancel = { builder = false },
                     onSave = { routineId, name, tasks ->
                         val save = {
                             if (routineId == null) vm.addRoutine(name, tasks) else vm.updateRoutine(routineId, name, tasks)
-                            routineBeingEdited = null
-                            tasksBeingEdited = emptyList()
                             builder = false
                             tab = "Routines"
                         }
@@ -380,7 +347,7 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
                 )
                 tab == "Today" -> TodayScreen(todayTasks, routines.any { it.active }, consistencyWeek, mountainJourney,
                     onOpen = { selected = it }, onComplete = {
-                        vm.saveTaskLog(it.task, if (it.task.isDurationTask) it.task.durationMinutes else null, "")
+                        vm.saveTaskLog(it.task, if (it.task.isDurationTask) it.task.durationMinutes else null, "", date = it.date)
                     })
                 tab == "Routines" -> RoutinesScreen(
                     routines = routines,
@@ -404,13 +371,11 @@ private fun RoutineApp(vm: RoutineViewModel, notificationRequest: ReminderReques
                         }
                     },
                     onAdd = {
-                        routineBeingEdited = null
-                        tasksBeingEdited = emptyList()
+                        builderEditor.open(null, emptyList())
                         builder = true
                     },
                     onEdit = { routine, routineTasks ->
-                        routineBeingEdited = routine
-                        tasksBeingEdited = routineTasks
+                        builderEditor.open(routine, routineTasks)
                         builder = true
                     },
                     onDelete = { vm.removeRoutine(it.id) },
@@ -748,78 +713,34 @@ private fun RoutinesScreen(
     }
 }
 
-private enum class BuilderStep { DETAILS, LIBRARY, CONFIGURE }
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RoutineBuilderScreen(
-    existingRoutine: RoutineEntity?,
-    existingTasks: List<RoutineTaskEntity>,
+    editor: RoutineBuilderViewModel,
     onCancel: () -> Unit,
     onSave: (String?, String, List<RoutineTaskDraft>) -> Unit
 ) {
-    var step by remember { mutableStateOf(BuilderStep.DETAILS) }
-    var routineName by remember(existingRoutine?.id) { mutableStateOf(existingRoutine?.name.orEmpty()) }
-    var drafts by remember(existingRoutine?.id) {
-        mutableStateOf(
-            existingTasks.sortedBy { it.orderIndex }.map { task ->
-                RoutineTaskDraft(
-                    templateId = task.templateId,
-                    title = task.title,
-                    icon = task.icon,
-                    category = task.category,
-                    kind = task.kind,
-                    instructions = task.instructions,
-                    durationMinutes = task.durationMinutes,
-                    timeOfDay = task.timeOfDay,
-                    daysOfWeek = task.daysOfWeek.split(',').mapNotNull(String::toIntOrNull)
-                        .mapNotNull { runCatching { DayOfWeek.of(it) }.getOrNull() }.toSet(),
-                    isDurationTask = task.isDurationTask,
-                    existingTaskId = task.id,
-                    timerEnabled = task.timerEnabled,
-                    timerMinutes = task.timerMinutes
-                )
-            }
-        )
-    }
-    var activeTemplate by remember { mutableStateOf<PredefinedTask?>(null) }
-    var editingIndex by remember { mutableStateOf<Int?>(null) }
-    var category by remember { mutableStateOf("All") }
-    var durationText by remember { mutableStateOf("") }
-    var timerEnabled by remember { mutableStateOf(false) }
-    var timerText by remember { mutableStateOf("10") }
-    var selectedTime by remember { mutableStateOf(LocalTime.of(9, 0)) }
-    var showTimePicker by remember { mutableStateOf(false) }
-    var selectedDays by remember { mutableStateOf(emptySet<DayOfWeek>()) }
+    val ui by editor.state.collectAsState()
+    val step = ui.step
+    val routineName = ui.routineName
+    val drafts = ui.drafts
+    val category = ui.category
     val categories = listOf("All", "Exercise", "Learning", "Wellbeing", "Daily Essentials")
-
-    fun configure(template: PredefinedTask, existing: RoutineTaskDraft? = null, index: Int? = null) {
-        activeTemplate = template
-        editingIndex = index
-        durationText = durationInput(template.kind, existing?.durationMinutes ?: template.defaultDuration)
-        timerEnabled = existing?.timerEnabled == true && supportsTaskTimer(template.kind, template.isDurationTask)
-        timerText = (existing?.timerMinutes ?: template.defaultDuration.coerceIn(1, 999)).toString()
-        selectedTime = existing?.timeOfDay?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
-            ?: if (template.kind == "sleep") LocalTime.of(22, 0) else LocalTime.of(9, 0)
-        selectedDays = existing?.daysOfWeek ?: template.defaultDays
-        step = BuilderStep.CONFIGURE
-    }
 
     BackHandler {
         when (step) {
             BuilderStep.DETAILS -> onCancel()
-            BuilderStep.LIBRARY -> step = BuilderStep.DETAILS
-            BuilderStep.CONFIGURE -> step = BuilderStep.LIBRARY
+            BuilderStep.LIBRARY -> editor.showDetails()
+            BuilderStep.CONFIGURE -> editor.leaveConfiguration()
         }
     }
 
     when (step) {
         BuilderStep.DETAILS -> Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 15.dp)) {
             TextButton(onClick = onCancel, contentPadding = PaddingValues(0.dp)) { Text("‹  Routines", color = forest, fontWeight = FontWeight.SemiBold) }
-            Text(if (existingRoutine == null) "Create a routine" else "Edit routine", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = ink)
+            Text(if (ui.routineId == null) "Create a routine" else "Edit routine", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = ink)
             OutlinedTextField(
                 value = routineName,
-                onValueChange = { routineName = it },
+                onValueChange = editor::setName,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 label = { Text("Title") },
                 singleLine = true
@@ -831,8 +752,7 @@ private fun RoutineBuilderScreen(
             if (drafts.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     AddActivityButton {
-                        category = "All"
-                        step = BuilderStep.LIBRARY
+                        editor.showLibrary()
                     }
                 }
             } else {
@@ -848,16 +768,12 @@ private fun RoutineBuilderScreen(
                                 }
                                 IconButton(
                                     onClick = {
-                                        val template = PredefinedTask(
-                                            draft.templateId, draft.title, draft.icon, draft.category, draft.kind,
-                                            draft.instructions, draft.durationMinutes, draft.daysOfWeek, draft.isDurationTask
-                                        )
-                                        configure(template, draft, index)
+                                        editor.editTask(index)
                                     },
                                     modifier = Modifier.semantics { contentDescription = "Edit ${draft.title}" }
                                 ) { Text("✎", color = forest, fontSize = 20.sp) }
                                 IconButton(
-                                    onClick = { drafts = drafts.filterIndexed { i, _ -> i != index } },
+                                    onClick = { editor.removeTask(index) },
                                     modifier = Modifier.semantics { contentDescription = "Remove ${draft.title}" }
                                 ) { Text("×", color = Color(0xFF79524A), fontSize = 24.sp) }
                             }
@@ -865,149 +781,41 @@ private fun RoutineBuilderScreen(
                     }
                     item {
                         AddActivityButton {
-                            category = "All"
-                            step = BuilderStep.LIBRARY
+                            editor.showLibrary()
                         }
                     }
                 }
             }
-            Button(onClick = { onSave(existingRoutine?.id, routineName, drafts) }, enabled = routineName.isNotBlank() && drafts.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {
-                Text(if (existingRoutine == null) "Save routine" else "Save changes", fontWeight = FontWeight.Bold)
+            Button(onClick = { onSave(ui.routineId, routineName, drafts) }, enabled = routineName.isNotBlank() && drafts.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {
+                Text(if (ui.routineId == null) "Save routine" else "Save changes", fontWeight = FontWeight.Bold)
             }
         }
 
         BuilderStep.LIBRARY -> Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
-            TextButton(onClick = { step = BuilderStep.DETAILS }, contentPadding = PaddingValues(0.dp)) { Text("‹  Routine", color = forest, fontWeight = FontWeight.SemiBold) }
+            TextButton(onClick = editor::showDetails, contentPadding = PaddingValues(0.dp)) { Text("‹  Routine", color = forest, fontWeight = FontWeight.SemiBold) }
             Text("Choose an activity", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = ink)
             Text("Select a task to adjust it for your routine.", color = Color(0xFF68736A), fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 categories.forEach { item ->
-                    FilterChip(selected = category == item, onClick = { category = item }, label = { Text(item) })
+                    FilterChip(selected = category == item, onClick = { editor.setCategory(item) }, label = { Text(item) })
                 }
             }
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 val visible = if (category == "All") taskLibrary else taskLibrary.filter { it.category == category }
                 items(visible, key = { it.id }) { template ->
-                    LibraryTaskCard(template, onClick = { configure(template) })
+                    LibraryTaskCard(template, onClick = { editor.configure(template) })
                 }
             }
         }
 
-        BuilderStep.CONFIGURE -> {
-            val template = activeTemplate
-            if (template != null) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 22.dp, vertical = 12.dp)) {
-                TextButton(onClick = { step = BuilderStep.LIBRARY }, contentPadding = PaddingValues(0.dp)) { Text("‹  Task library", color = forest, fontWeight = FontWeight.SemiBold) }
-                Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(13.dp)) {
-                    Box(Modifier.size(58.dp).background(mint, CircleShape), contentAlignment = Alignment.Center) { Text(template.icon, fontSize = 29.sp) }
-                    Column {
-                        Text(template.category, color = forest, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(template.title, color = ink, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                    Text(template.instructions, Modifier.padding(16.dp), color = Color(0xFF626D64), fontSize = 14.sp)
-                }
-                if (template.isDurationTask) {
-                    OutlinedTextField(
-                        value = durationText,
-                        onValueChange = { input -> filterDurationInput(template.kind, input)?.let { durationText = it } },
-                        modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                        label = { Text(if (template.kind == "sleep") "Sleep target (hours)" else "Duration (minutes)") },
-                        supportingText = if (template.kind == "sleep") ({ Text("For example, 8 or 7.5 hours.") }) else null,
-                        isError = durationText.isNotEmpty() && parseDurationInput(template.kind, durationText) == null,
-                        keyboardOptions = KeyboardOptions(keyboardType = if (template.kind == "sleep") KeyboardType.Decimal else KeyboardType.Number),
-                        singleLine = true
-                    )
-                }
-                if (supportsTaskTimer(template.kind, template.isDurationTask)) {
-                    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Use activity timer", modifier = Modifier.weight(1f), color = ink, fontWeight = FontWeight.Medium)
-                        Switch(checked = timerEnabled, onCheckedChange = { timerEnabled = it },
-                            modifier = Modifier.semantics { contentDescription = "Use activity timer" })
-                    }
-                    if (timerEnabled) {
-                        OutlinedTextField(
-                            value = timerText,
-                            onValueChange = { if (it.length <= 3 && it.all(Char::isDigit)) timerText = it },
-                            label = { Text("Timer limit (minutes)") },
-                            supportingText = { Text("1–999 minutes. Start it from the task screen.") },
-                            isError = timerText.toIntOrNull()?.let { it in 1..999 } != true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(10, 20, 30).forEach { minutes ->
-                                FilterChip(selected = timerText.toIntOrNull() == minutes, onClick = { timerText = minutes.toString() }, label = { Text("$minutes min") })
-                            }
-                        }
-                    }
-                }
-                val context = LocalContext.current
-                OutlinedButton(
-                    onClick = { showTimePicker = true },
-                    modifier = Modifier.fillMaxWidth().padding(top = 18.dp).heightIn(min = 52.dp)
-                ) {
-                    Text("${if (template.kind == "sleep") "Bedtime" else "Time"}  ·  ${formatTaskTime(selectedTime)}")
-                }
-                if (showTimePicker) {
-                    val pickerState = rememberTimePickerState(
-                        initialHour = selectedTime.hour,
-                        initialMinute = selectedTime.minute,
-                        is24Hour = android.text.format.DateFormat.is24HourFormat(context)
-                    )
-                    AlertDialog(
-                        onDismissRequest = { showTimePicker = false },
-                        title = { Text("Choose a time") },
-                        text = { TimePicker(state = pickerState) },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                selectedTime = LocalTime.of(pickerState.hour, pickerState.minute)
-                                showTimePicker = false
-                            }) { Text("Set time") }
-                        },
-                        dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } }
-                    )
-                }
-                Text("Which days?", color = ink, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
-                FilterChip(selected = selectedDays == allDays, onClick = { selectedDays = if (selectedDays == allDays) emptySet() else allDays }, label = { Text("Every day") })
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                    weekdays.forEach { (day, short) ->
-                        FilterChip(
-                            selected = day in selectedDays,
-                            onClick = { selectedDays = if (day in selectedDays) selectedDays - day else selectedDays + day },
-                            label = { Text(short.take(1), maxLines = 1) },
-                            modifier = Modifier.weight(1f).semantics { contentDescription = day.name.lowercase() }
-                        )
-                    }
-                }
-                Text("You can choose every day or select specific days of the week.", color = Color(0xFF737B74), fontSize = 13.sp)
-                Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = {
-                        val draft = RoutineTaskDraft(
-                            templateId = template.id,
-                            title = template.title,
-                            icon = template.icon,
-                            category = template.category,
-                            kind = template.kind,
-                            instructions = template.instructions,
-                            durationMinutes = parseDurationInput(template.kind, durationText) ?: template.defaultDuration,
-                            timeOfDay = selectedTime.toString(),
-                            daysOfWeek = selectedDays,
-                            isDurationTask = template.isDurationTask,
-                            existingTaskId = editingIndex?.let { drafts.getOrNull(it)?.existingTaskId },
-                            timerEnabled = timerEnabled && supportsTaskTimer(template.kind, template.isDurationTask),
-                            timerMinutes = timerText.toIntOrNull()?.takeIf { it in 1..999 } ?: template.defaultDuration.coerceIn(1, 999)
-                        )
-                        val index = editingIndex
-                        drafts = if (index == null) drafts + draft else drafts.mapIndexed { i, old -> if (i == index) draft else old }
-                        step = BuilderStep.DETAILS
-                    },
-                    enabled = selectedDays.isNotEmpty() && (!template.isDurationTask || parseDurationInput(template.kind, durationText) != null) &&
-                        (!timerEnabled || timerText.toIntOrNull()?.let { it in 1..999 } == true),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)
-                ) { Text(if (editingIndex == null) "Add to routine" else "Save changes", fontWeight = FontWeight.Bold) }
-            }
+        BuilderStep.CONFIGURE -> ui.configuration?.let { configuration ->
+            TaskConfigurationScreen(
+                state = configuration,
+                editing = ui.editingIndex != null,
+                onChange = editor::changeConfiguration,
+                onBack = editor::leaveConfiguration,
+                onApply = editor::applyConfiguration
+            )
         }
     }
 }
@@ -1050,12 +858,19 @@ private fun LibraryTaskCard(task: PredefinedTask, onClick: () -> Unit) {
 
 @Composable
 private fun TaskScreen(item: TodayRoutineTask, timerSession: TaskTimerSession?, onStartTimer: () -> Unit,
-    onPauseTimer: () -> Unit, onResetTimer: () -> Unit, onBack: () -> Unit, onSave: (Int?, String) -> Unit) {
+    onPauseTimer: () -> Unit, onResetTimer: () -> Unit, onBack: () -> Unit, onChecklistChange: (String, Boolean) -> Unit,
+    onSave: (Int?, String, Set<String>) -> Unit) {
     val task = item.task
-    var durationText by remember(task.id, item.log?.id) { mutableStateOf(durationInput(task.kind, item.log?.actualDurationMinutes ?: task.durationMinutes)) }
+    val checklist = item.log?.checklistItems ?: if (task.checklistEnabled) task.checklistItems else emptyList()
+    var checkedIds by remember(task.id, item.date, checklist, item.log?.id) { mutableStateOf(item.checkedItemIds) }
+    var checklistTouched by remember(task.id, item.date, checklist, item.log?.id) { mutableStateOf(false) }
+    LaunchedEffect(item.checkedItemIds) {
+        if (!checklistTouched) checkedIds = item.checkedItemIds
+    }
     var notes by remember(task.id, item.log?.id) { mutableStateOf(item.log?.notes.orEmpty()) }
-    val actualDuration = if (task.kind == "sleep") parseDurationInput(task.kind, durationText) else durationText.toIntOrNull()
-    Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 14.dp)) {
+    val completionDuration = if (item.log != null) item.log.actualDurationMinutes
+        else if (task.isDurationTask) task.durationMinutes else null
+    Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(horizontal = 22.dp, vertical = 14.dp)) {
         TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("‹  Today", color = forest, fontWeight = FontWeight.SemiBold) }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
@@ -1066,37 +881,31 @@ private fun TaskScreen(item: TodayRoutineTask, timerSession: TaskTimerSession?, 
             item { Text("${item.routineName.uppercase(Locale.getDefault())}  ·  ${task.category.uppercase(Locale.getDefault())}", color = forest, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp) }
             item { Text(task.title, color = ink, fontSize = 27.sp, fontWeight = FontWeight.Bold) }
             item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text("Your activity", fontWeight = FontWeight.SemiBold, color = ink)
-                        Text("Scheduled for ${formatTaskTime(task.timeOfDay)}", color = forest, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                        Text(task.instructions, color = Color(0xFF626D64), fontSize = 14.sp)
-                        if (task.isDurationTask) Text("Your routine target: ${durationLabel(task.kind, task.durationMinutes)}", color = forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(formatTaskTime(task.timeOfDay), Modifier.weight(1f), color = forest, style = MaterialTheme.typography.bodyMedium)
+                    if (task.isDurationTask) Text(
+                        durationLabel(task.kind, task.durationMinutes), Modifier.weight(1f), color = forest,
+                        style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.End
+                    )
                 }
             }
             if (item.log == null && task.timerEnabled && supportsTaskTimer(task.kind, task.isDurationTask)) item {
                 TaskTimerCard(task, timerSession, onStartTimer, onPauseTimer, onResetTimer)
             }
-            if (task.isDurationTask) item {
-                OutlinedTextField(
-                    value = durationText,
-                    onValueChange = { input -> filterDurationInput(task.kind, input)?.let { durationText = it } },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (task.kind == "sleep") "Hours slept (optional)" else "Minutes (optional)") },
-                    isError = task.kind == "sleep" && durationText.isNotEmpty() && actualDuration == null,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (task.kind == "sleep") KeyboardType.Decimal else KeyboardType.Number),
-                    singleLine = true
-                )
+            if (checklist.isNotEmpty()) item(key = "checklist") {
+                TaskChecklistCard(checklist, checkedIds) { id, checked ->
+                    checklistTouched = true
+                    checkedIds = if (checked) checkedIds + id else checkedIds - id
+                    onChecklistChange(id, checked)
+                }
             }
             item {
-                OutlinedTextField(notes, { notes = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Note (optional)") }, placeholder = { Text("Anything you'd like to remember?") }, minLines = 2)
+                OutlinedTextField(notes, { notes = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Notes (optional)") }, placeholder = { Text("Actual duration or anything you'd like to remember") }, minLines = 2)
             }
         }
         Spacer(Modifier.height(10.dp))
         Button(
-            onClick = { onSave(if (task.isDurationTask) actualDuration else null, notes) },
-            enabled = !task.isDurationTask || durationText.isBlank() || actualDuration != null,
+            onClick = { onSave(completionDuration, notes, checkedIds) },
             modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
             shape = RoundedCornerShape(18.dp)
         ) {

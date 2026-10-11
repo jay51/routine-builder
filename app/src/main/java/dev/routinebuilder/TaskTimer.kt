@@ -17,10 +17,8 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.util.Locale
 
-internal fun supportsTaskTimer(kind: String, isDurationTask: Boolean): Boolean = isDurationTask && kind in setOf(
-    "run", "walk", "strength", "stretch", "yoga", "study", "read", "review", "language",
-    "meditate", "journal", "breathe", "outside", "tidy"
-)
+internal fun supportsTaskTimer(kind: String, isDurationTask: Boolean): Boolean =
+    taskConfigurationCapabilities(kind, isDurationTask).activityTimer
 
 internal data class TaskTimerSession(
     val date: LocalDate,
